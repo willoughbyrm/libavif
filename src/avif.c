@@ -376,6 +376,81 @@ void avifRGBImageFreePixels(avifRGBImage * rgb)
 }
 
 // ---------------------------------------------------------------------------
+// avifCodecSpecificValue
+
+static char * avifStrdup(const char * str)
+{
+    size_t len = strlen(str);
+    char * dup = avifAlloc(len + 1);
+    memcpy(dup, str, len + 1);
+    return dup;
+}
+
+avifCodecSpecificValueArray * avifCodecSpecificValueArrayCreate(void)
+{
+    avifCodecSpecificValueArray * ava = avifAlloc(sizeof(avifCodecSpecificValueArray));
+    avifArrayCreate(ava, sizeof(avifCodecSpecificValue), 4);
+    return ava;
+}
+
+void avifCodecSpecificValueArrayDestroy(avifCodecSpecificValueArray * csva)
+{
+    if (!csva) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < csva->count; ++i) {
+        avifCodecSpecificValue * entry = &csva->entries[i];
+        avifFree(entry->key);
+        avifFree(entry->value);
+    }
+    avifArrayDestroy(csva);
+    avifFree(csva);
+}
+
+void avifCodecSpecificValueArraySet(avifCodecSpecificValueArray * csva, const char * key, const char * value)
+{
+    // Check to see if a key must be replaced
+    for (uint32_t i = 0; i < csva->count; ++i) {
+        avifCodecSpecificValue * entry = &csva->entries[i];
+        if (!strcmp(entry->key, key)) {
+            if (value) {
+                // Update the value
+                avifFree(entry->value);
+                entry->value = avifStrdup(value);
+                entry->used = AVIF_FALSE; // reset used state
+            } else {
+                // Delete the value
+                avifFree(entry->key);
+                avifFree(entry->value);
+                --csva->count;
+                if (csva->count > 0) {
+                    memmove(&csva->entries[i], &csva->entries[i + 1], (csva->count - i) * csva->elementSize);
+                }
+            }
+            return;
+        }
+    }
+
+    // Add a new key
+    avifCodecSpecificValue * entry = (avifCodecSpecificValue *)avifArrayPushPtr(csva);
+    entry->key = avifStrdup(key);
+    entry->value = avifStrdup(value);
+    entry->used = AVIF_FALSE;
+}
+
+avifCodecSpecificValue * avifCodecSpecificValueArrayGet(avifCodecSpecificValueArray * csva, const char * key)
+{
+    for (uint32_t i = 0; i < csva->count; ++i) {
+        avifCodecSpecificValue * entry = &csva->entries[i];
+        if (!strcmp(entry->key, key)) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+// ---------------------------------------------------------------------------
 // Codec availability and versions
 
 typedef const char * (*versionFunc)(void);

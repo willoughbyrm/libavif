@@ -123,6 +123,22 @@ void avifCodecEncodeOutputAddSample(avifCodecEncodeOutput * encodeOutput, const 
 void avifCodecEncodeOutputDestroy(avifCodecEncodeOutput * encodeOutput);
 
 // ---------------------------------------------------------------------------
+// avifCodecSpecificValueArray (KV string pairs for advanced tuning)
+
+typedef struct avifCodecSpecificValue
+{
+    char * key;    // Must be a simple lowercase alphanumeric string
+    char * value;  // Free-form string to be interpreted by the codec
+    avifBool used; // Must be set by a codec if this specific value is used;
+                   // This provides validation in tooling.
+} avifCodecSpecificValue;
+AVIF_ARRAY_DECLARE(avifCodecSpecificValueArray, avifCodecSpecificValue, entries);
+avifCodecSpecificValueArray * avifCodecSpecificValueArrayCreate(void);
+void avifCodecSpecificValueArrayDestroy(avifCodecSpecificValueArray * csva);
+void avifCodecSpecificValueArraySet(avifCodecSpecificValueArray * csva, const char * key, const char * value); // if(value==NULL), key is deleted
+avifCodecSpecificValue * avifCodecSpecificValueArrayGet(avifCodecSpecificValueArray * csva, const char * key); // Returns NULL if not found
+
+// ---------------------------------------------------------------------------
 // avifCodec (abstraction layer to use different AV1 implementations)
 
 struct avifCodec;
@@ -145,6 +161,9 @@ typedef struct avifCodec
 {
     avifCodecDecodeInput * decodeInput;
     avifCodecConfigurationBox configBox; // Pre-populated by avifEncoderWrite(), available and overridable by codec impls
+    avifCodecSpecificValueArray * csva;  // Contains codec-specific KV pairs for advanced tuning.
+                                         // If a codec uses a value, it must mark it as used.
+                                         // This array is NOT owned by avifCodec.
     struct avifCodecInternal * internal; // up to each codec to use how it wants
 
     avifCodecOpenFunc open;

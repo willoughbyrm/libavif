@@ -633,6 +633,7 @@ avifResult avifDecoderNthImageTiming(const avifDecoder * decoder, uint32_t frame
 // avifEncoder
 
 struct avifEncoderData;
+struct avifCodecSpecificValueArray;
 
 // Notes:
 // * If avifEncoderWrite() returns AVIF_RESULT_OK, output must be freed with avifRWDataFree()
@@ -666,6 +667,7 @@ typedef struct avifEncoder
 
     // Internals used by the encoder
     struct avifEncoderData * data;
+    struct avifCodecSpecificValueArray * csva;
 } avifEncoder;
 
 avifEncoder * avifEncoderCreate(void);
@@ -696,6 +698,18 @@ enum avifAddImageFlags
 //
 avifResult avifEncoderAddImage(avifEncoder * encoder, const avifImage * image, uint64_t durationInTimescales, uint32_t addImageFlags);
 avifResult avifEncoderFinish(avifEncoder * encoder, avifRWData * output);
+
+// Codec-specific, optional "advanced" settings tuning, in form of string key/value pairs. These
+// should be set as early as possible, preferably just after creating avifEncoder but before
+// performing any other actions.
+// key must be non-NULL, but passing a NULL value will delete that key, if it exists.
+void avifEncoderSetCodecSpecificValue(avifEncoder * encoder, const char * key, const char * value);
+
+// Used for validation. Set *iter=0 to begin, and call this in a loop until it returns NULL. Every
+// time this returns non-NULL, the key it returns hadn't been used by the encoder (yet). This is
+// best used after a full encode is complete to avoid false positives, in case a codec only uses a
+// specific value at the very end of an encode.
+const char * avifEncoderGetNextUnusedCodecSpecificValue(avifEncoder * encoder, uint32_t * iter);
 
 // Helpers
 avifBool avifImageUsesU16(const avifImage * image);

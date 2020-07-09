@@ -178,13 +178,35 @@ avifEncoder * avifEncoderCreate(void)
     encoder->data = avifEncoderDataCreate();
     encoder->timescale = 1;
     encoder->keyframeInterval = 0;
+    encoder->csva = avifCodecSpecificValueArrayCreate();
     return encoder;
 }
 
 void avifEncoderDestroy(avifEncoder * encoder)
 {
+    avifCodecSpecificValueArrayDestroy(encoder->csva);
     avifEncoderDataDestroy(encoder->data);
     avifFree(encoder);
+}
+
+void avifEncoderSetCodecSpecificValue(avifEncoder * encoder, const char * key, const char * value)
+{
+    avifCodecSpecificValueArraySet(encoder->csva, key, value);
+}
+
+const char * avifEncoderGetNextUnusedCodecSpecificValue(avifEncoder * encoder, uint32_t * iter)
+{
+    if (iter) {
+        while (*iter < encoder->csva->count) {
+            avifCodecSpecificValue * entry = &encoder->csva->entries[*iter];
+            ++(*iter);
+
+            if (!entry->used) {
+                return entry->key;
+            }
+        }
+    }
+    return NULL;
 }
 
 static void avifEncoderWriteColorProperties(avifRWStream * s, const avifImage * imageMetadata, struct ipmaArray * ipma, uint8_t * itemPropertyIndex)
@@ -359,6 +381,7 @@ avifResult avifEncoderAddImage(avifEncoder * encoder, const avifImage * image, u
 
         encoder->data->colorItem = avifEncoderDataCreateItem(encoder->data, "av01", "Color", 6);
         encoder->data->colorItem->codec = avifCodecCreate(encoder->codecChoice, AVIF_CODEC_FLAG_CAN_ENCODE);
+        encoder->data->colorItem->codec->csva = encoder->csva;
         if (!encoder->data->colorItem->codec) {
             // Just bail out early, we're not surviving this function without an encoder compiled in
             return AVIF_RESULT_NO_CODEC_AVAILABLE;
@@ -381,6 +404,7 @@ avifResult avifEncoderAddImage(avifEncoder * encoder, const avifImage * image, u
         if (needsAlpha) {
             encoder->data->alphaItem = avifEncoderDataCreateItem(encoder->data, "av01", "Alpha", 6);
             encoder->data->alphaItem->codec = avifCodecCreate(encoder->codecChoice, AVIF_CODEC_FLAG_CAN_ENCODE);
+            encoder->data->alphaItem->codec->csva = encoder->csva;
             if (!encoder->data->alphaItem->codec) {
                 return AVIF_RESULT_NO_CODEC_AVAILABLE;
             }
