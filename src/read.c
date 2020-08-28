@@ -392,9 +392,13 @@ static avifBool avifCodecDecodeInputGetSamples(avifCodecDecodeInput * decodeInpu
     VARNAME##_roData.size = SIZE;        \
     avifROStreamStart(&VARNAME, &VARNAME##_roData)
 
+// Use this to keep track of whether or not a child box that must be unique (0 or 1 present) has
+// been seen yet, when parsing a parent box. If the "seen" bit is already set for a given box when
+// it is encountered during parse, an error is thrown. Which bit corresponds to which box is
+// dictated entirely by the calling function.
 static avifBool uniqueBoxSeen(uint32_t * uniqueBoxFlags, uint32_t whichFlag)
 {
-    uint32_t flag = 1 << whichFlag;
+    const uint32_t flag = 1 << whichFlag;
     if (*uniqueBoxFlags & flag) {
         // This box has already been seen. Error!
         return AVIF_FALSE;
@@ -457,12 +461,6 @@ typedef struct avifMeta
     // AVIF, this should point at an av01 type item containing color planes, and all other items
     // are ignored unless they refer to this item in some way (alpha plane, EXIF/XMP metadata).
     uint32_t primaryItemID;
-
-    // These flags keep track of whether or not a box that must be unique (0 or 1 present) in the
-    // meta box has been seen yet. If the "seen" bit is already set for a given box when it is
-    // encountered during parse, an error is thrown. Which bit corresponds to which box is dictated
-    // entirely by avifParseMetaBox().
-    uint32_t uniqueBoxFlags;
 } avifMeta;
 
 static avifMeta * avifMetaCreate()
@@ -1028,13 +1026,11 @@ static avifBool avifParseItemLocationBox(avifMeta * meta, const uint8_t * raw, s
         if (!item) {
             return AVIF_FALSE;
         }
-        item->id = itemID;
-        item->idatID = idatID;
-
         if (item->extents.count > 0) {
             // This item has already been given extents via this iloc box. This is invalid.
             return AVIF_FALSE;
         }
+        item->idatID = idatID;
 
         uint16_t dataReferenceIndex;                                 // unsigned int(16) data_ref rence_index;
         CHECK(avifROStreamReadU16(&s, &dataReferenceIndex));         //
@@ -1583,27 +1579,28 @@ static avifBool avifParseMetaBox(avifMeta * meta, const uint8_t * raw, size_t ra
 
     ++meta->idatID; // for tracking idat
 
+    uint32_t uniqueBoxFlags = 0;
     while (avifROStreamHasBytesLeft(&s, 1)) {
         avifBoxHeader header;
         CHECK(avifROStreamReadBoxHeader(&s, &header));
 
         if (!memcmp(header.type, "iloc", 4)) {
-            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 0));
+            CHECK(uniqueBoxSeen(&uniqueBoxFlags, 0));
             CHECK(avifParseItemLocationBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "pitm", 4)) {
-            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 1));
+            CHECK(uniqueBoxSeen(&uniqueBoxFlags, 1));
             CHECK(avifParsePrimaryItemBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "idat", 4)) {
-            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 2));
+            CHECK(uniqueBoxSeen(&uniqueBoxFlags, 2));
             CHECK(avifParseItemDataBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "iprp", 4)) {
-            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 3));
+            CHECK(uniqueBoxSeen(&uniqueBoxFlags, 3));
             CHECK(avifParseItemPropertiesBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "iinf", 4)) {
-            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 4));
+            CHECK(uniqueBoxSeen(&uniqueBoxFlags, 4));
             CHECK(avifParseItemInfoBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "iref", 4)) {
-            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 5));
+            CHECK(uniqueBoxSeen(&uniqueBoxFlags, 5));
             CHECK(avifParseItemReferenceBox(meta, avifROStreamCurrent(&s), header.size));
         }
 
