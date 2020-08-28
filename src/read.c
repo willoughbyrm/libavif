@@ -383,7 +383,7 @@ static avifBool avifCodecDecodeInputGetSamples(avifCodecDecodeInput * decodeInpu
 }
 
 // ---------------------------------------------------------------------------
-// Helper macros
+// Helper macros / functions
 
 #define BEGIN_STREAM(VARNAME, PTR, SIZE) \
     avifROStream VARNAME;                \
@@ -391,6 +391,19 @@ static avifBool avifCodecDecodeInputGetSamples(avifCodecDecodeInput * decodeInpu
     VARNAME##_roData.data = PTR;         \
     VARNAME##_roData.size = SIZE;        \
     avifROStreamStart(&VARNAME, &VARNAME##_roData)
+
+static avifBool uniqueBoxSeen(uint32_t * uniqueBoxFlags, uint32_t whichFlag)
+{
+    uint32_t flag = 1 << whichFlag;
+    if (*uniqueBoxFlags & flag) {
+        // This box has already been seen. Error!
+        return AVIF_FALSE;
+    }
+
+    // Mark this box as seen.
+    *uniqueBoxFlags |= flag;
+    return AVIF_TRUE;
+}
 
 // ---------------------------------------------------------------------------
 // avifDecoderData
@@ -444,6 +457,12 @@ typedef struct avifMeta
     // AVIF, this should point at an av01 type item containing color planes, and all other items
     // are ignored unless they refer to this item in some way (alpha plane, EXIF/XMP metadata).
     uint32_t primaryItemID;
+
+    // These flags keep track of whether or not a box that must be unique (0 or 1 present) in the
+    // meta box has been seen yet. If the "seen" bit is already set for a given box when it is
+    // encountered during parse, an error is thrown. Which bit corresponds to which box is dictated
+    // entirely by avifParseMetaBox().
+    uint32_t uniqueBoxFlags;
 } avifMeta;
 
 static avifMeta * avifMetaCreate()
@@ -637,7 +656,12 @@ static const uint8_t * avifDecoderDataCalcItemPtr(avifDecoderData * data, avifDe
     }
 
     // Multiple extents; merge them into a single contiguous buffer
+    if (item->size > data->rawInput.size) {
+        // Sanity check: somehow the sum of extents for this item exceeds the entire file size!
+        return NULL;
+    }
     avifRWDataRealloc(&item->mergedExtents, item->size);
+
     uint8_t * front = item->mergedExtents.data;
     size_t remainingBytes = item->mergedExtents.size;
     for (uint32_t extentIter = 0; extentIter < item->extents.count; ++extentIter) {
@@ -1006,6 +1030,11 @@ static avifBool avifParseItemLocationBox(avifMeta * meta, const uint8_t * raw, s
         }
         item->id = itemID;
         item->idatID = idatID;
+
+        if (item->extents.count > 0) {
+            // This item has already been given extents via this iloc box. This is invalid.
+            return AVIF_FALSE;
+        }
 
         uint16_t dataReferenceIndex;                                 // unsigned int(16) data_ref rence_index;
         CHECK(avifROStreamReadU16(&s, &dataReferenceIndex));         //
@@ -1559,16 +1588,22 @@ static avifBool avifParseMetaBox(avifMeta * meta, const uint8_t * raw, size_t ra
         CHECK(avifROStreamReadBoxHeader(&s, &header));
 
         if (!memcmp(header.type, "iloc", 4)) {
+            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 0));
             CHECK(avifParseItemLocationBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "pitm", 4)) {
+            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 1));
             CHECK(avifParsePrimaryItemBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "idat", 4)) {
+            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 2));
             CHECK(avifParseItemDataBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "iprp", 4)) {
+            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 3));
             CHECK(avifParseItemPropertiesBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "iinf", 4)) {
+            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 4));
             CHECK(avifParseItemInfoBox(meta, avifROStreamCurrent(&s), header.size));
         } else if (!memcmp(header.type, "iref", 4)) {
+            CHECK(uniqueBoxSeen(&meta->uniqueBoxFlags, 5));
             CHECK(avifParseItemReferenceBox(meta, avifROStreamCurrent(&s), header.size));
         }
 
