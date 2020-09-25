@@ -71,7 +71,7 @@ static avifBool dav1dCodecGetNextImage(struct avifCodec * codec, avifDecodeSampl
     }
 
     for (;;) {
-        if (dav1dData.sz) {
+        if (dav1dData.data) {
             int res = dav1d_send_data(codec->internal->dav1dContext, &dav1dData);
             if ((res < 0) && (res != DAV1D_ERR(EAGAIN))) {
                 dav1d_data_unref(&dav1dData);
@@ -81,11 +81,16 @@ static avifBool dav1dCodecGetNextImage(struct avifCodec * codec, avifDecodeSampl
 
         int res = dav1d_get_picture(codec->internal->dav1dContext, &nextFrame);
         if (res == DAV1D_ERR(EAGAIN)) {
-            // send more data
-            continue;
+            if (dav1dData.data) {
+                // send more data
+                continue;
+            }
+            return AVIF_FALSE;
         } else if (res < 0) {
             // No more frames
-            dav1d_data_unref(&dav1dData);
+            if (dav1dData.data) {
+                dav1d_data_unref(&dav1dData);
+            }
             return AVIF_FALSE;
         } else {
             // Got a picture!
@@ -93,7 +98,9 @@ static avifBool dav1dCodecGetNextImage(struct avifCodec * codec, avifDecodeSampl
             break;
         }
     }
-    dav1d_data_unref(&dav1dData);
+    if (dav1dData.data) {
+        dav1d_data_unref(&dav1dData);
+    }
 
     if (gotPicture) {
         dav1d_picture_unref(&codec->internal->dav1dPicture);
