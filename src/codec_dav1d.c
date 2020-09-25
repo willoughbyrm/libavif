@@ -29,7 +29,6 @@ struct avifCodecInternal
     Dav1dPicture dav1dPicture;
     avifBool hasPicture;
     avifRange colorRange;
-    Dav1dData dav1dData;
 };
 
 static void avifDav1dFreeCallback(const uint8_t * buf, void * cookie)
@@ -41,9 +40,6 @@ static void avifDav1dFreeCallback(const uint8_t * buf, void * cookie)
 
 static void dav1dCodecDestroyInternal(avifCodec * codec)
 {
-    if (codec->internal->dav1dData.sz) {
-        dav1d_data_unref(&codec->internal->dav1dData);
-    }
     if (codec->internal->hasPicture) {
         dav1d_picture_unref(&codec->internal->dav1dPicture);
     }
@@ -69,30 +65,27 @@ static avifBool dav1dCodecGetNextImage(struct avifCodec * codec, avifDecodeSampl
     Dav1dPicture nextFrame;
     memset(&nextFrame, 0, sizeof(Dav1dPicture));
 
+    Dav1dData dav1dData;
+    if (dav1d_data_wrap(&dav1dData, sample->data.data, sample->data.size, avifDav1dFreeCallback, NULL) != 0) {
+        return AVIF_FALSE;
+    }
+
     for (;;) {
-        if (!codec->internal->dav1dData.sz) {
-            if (sample) {
-                if (dav1d_data_wrap(&codec->internal->dav1dData, sample->data.data, sample->data.size, avifDav1dFreeCallback, NULL) != 0) {
-                    return AVIF_FALSE;
-                }
-                sample = NULL;
-            } else {
-                // No more data
+        if (dav1dData.sz) {
+            int res = dav1d_send_data(codec->internal->dav1dContext, &dav1dData);
+            if ((res < 0) && (res != DAV1D_ERR(EAGAIN))) {
+                dav1d_data_unref(&dav1dData);
                 return AVIF_FALSE;
             }
         }
 
-        int res = dav1d_send_data(codec->internal->dav1dContext, &codec->internal->dav1dData);
-        if ((res < 0) && (res != DAV1D_ERR(EAGAIN))) {
-            return AVIF_FALSE;
-        }
-
-        res = dav1d_get_picture(codec->internal->dav1dContext, &nextFrame);
+        int res = dav1d_get_picture(codec->internal->dav1dContext, &nextFrame);
         if (res == DAV1D_ERR(EAGAIN)) {
             // send more data
             continue;
         } else if (res < 0) {
             // No more frames
+            dav1d_data_unref(&dav1dData);
             return AVIF_FALSE;
         } else {
             // Got a picture!
@@ -100,6 +93,7 @@ static avifBool dav1dCodecGetNextImage(struct avifCodec * codec, avifDecodeSampl
             break;
         }
     }
+    dav1d_data_unref(&dav1dData);
 
     if (gotPicture) {
         dav1d_picture_unref(&codec->internal->dav1dPicture);
