@@ -53,27 +53,6 @@ static void dav1dCodecDestroyInternal(avifCodec * codec)
     avifFree(codec->internal);
 }
 
-// returns AVIF_FALSE if there's nothing left to feed, or feeding fatally fails (say that five times fast)
-static avifBool dav1dFeedData(avifCodec * codec, avifDecodeSample * sample)
-{
-    if (!codec->internal->dav1dData.sz) {
-        if (sample) {
-            if (dav1d_data_wrap(&codec->internal->dav1dData, sample->data.data, sample->data.size, avifDav1dFreeCallback, NULL) != 0) {
-                return AVIF_FALSE;
-            }
-        } else {
-            // No more data
-            return AVIF_FALSE;
-        }
-    }
-
-    int res = dav1d_send_data(codec->internal->dav1dContext, &codec->internal->dav1dData);
-    if ((res < 0) && (res != DAV1D_ERR(EAGAIN))) {
-        return AVIF_FALSE;
-    }
-    return AVIF_TRUE;
-}
-
 static avifBool dav1dCodecOpen(avifCodec * codec)
 {
     if (codec->internal->dav1dContext == NULL) {
@@ -91,9 +70,25 @@ static avifBool dav1dCodecGetNextImage(struct avifCodec * codec, avifDecodeSampl
     memset(&nextFrame, 0, sizeof(Dav1dPicture));
 
     for (;;) {
-        avifBool sentData = dav1dFeedData(codec, sample);
-        int res = dav1d_get_picture(codec->internal->dav1dContext, &nextFrame);
-        if ((res == DAV1D_ERR(EAGAIN)) && sentData) {
+        if (!codec->internal->dav1dData.sz) {
+            if (sample) {
+                if (dav1d_data_wrap(&codec->internal->dav1dData, sample->data.data, sample->data.size, avifDav1dFreeCallback, NULL) != 0) {
+                    return AVIF_FALSE;
+                }
+                sample = NULL;
+            } else {
+                // No more data
+                return AVIF_FALSE;
+            }
+        }
+
+        int res = dav1d_send_data(codec->internal->dav1dContext, &codec->internal->dav1dData);
+        if ((res < 0) && (res != DAV1D_ERR(EAGAIN))) {
+            return AVIF_FALSE;
+        }
+
+        res = dav1d_get_picture(codec->internal->dav1dContext, &nextFrame);
+        if (res == DAV1D_ERR(EAGAIN)) {
             // send more data
             continue;
         } else if (res < 0) {
