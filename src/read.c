@@ -708,13 +708,16 @@ static avifResult avifDecoderItemMaxExtent(const avifDecoderItem * item, avifExt
     return AVIF_RESULT_OK;
 }
 
-static avifResult avifDecoderItemValidateAV1(const avifDecoderItem * item)
+static avifResult avifDecoderHarvestAV1SequenceHeader(avifDecoder * decoder, avifBool alpha, avifSequenceHeader * outSequenceHeader);
+
+static avifResult avifDecoderValidateAV1Item(avifDecoder * decoder, const avifDecoderItem * item, avifBool alpha)
 {
     const avifProperty * av1CProp = avifPropertyArrayFind(&item->properties, "av1C");
     if (!av1CProp) {
         // An av1C box is mandatory in all valid AVIF configurations. Bail out.
         return AVIF_RESULT_BMFF_PARSE_FAILED;
     }
+#if 0
     const uint32_t av1CDepth = avifCodecConfigurationBoxGetDepth(&av1CProp->u.av1C);
 
     const avifProperty * pixiProp = avifPropertyArrayFind(&item->properties, "pixi");
@@ -728,6 +731,17 @@ static avifResult avifDecoderItemValidateAV1(const avifDecoderItem * item)
             // pixi depth must match av1C depth
             return AVIF_RESULT_BMFF_PARSE_FAILED;
         }
+    }
+#endif
+
+    avifSequenceHeader sequenceHeader;
+    avifResult harvestResult = avifDecoderHarvestAV1SequenceHeader(decoder, alpha, &sequenceHeader);
+    if (harvestResult != AVIF_RESULT_OK) {
+        return harvestResult;
+    }
+
+    if (memcmp(&av1CProp->u.av1C, &sequenceHeader.av1C, sizeof(avifCodecConfigurationBox)) != 0) {
+        return AVIF_RESULT_BMFF_PARSE_FAILED;
     }
     return AVIF_RESULT_OK;
 }
@@ -2481,6 +2495,44 @@ static avifResult avifDecoderPrepareSample(avifDecoder * decoder, avifDecodeSamp
     return AVIF_RESULT_OK;
 }
 
+static avifResult avifDecoderHarvestAV1SequenceHeader(avifDecoder * decoder, avifBool alpha, avifSequenceHeader * outSequenceHeader)
+{
+    avifTile * foundTile = NULL;
+    for (uint32_t tileIndex = 0; tileIndex < decoder->data->tiles.count; ++tileIndex) {
+        avifTile * tile = &decoder->data->tiles.tile[tileIndex];
+        if (tile->input->alpha == alpha) {
+            foundTile = tile;
+            break;
+        }
+    }
+
+    if (foundTile && (foundTile->input->samples.count > 0)) {
+        avifDecodeSample * sample = &foundTile->input->samples.sample[0];
+
+        // Harvest CICP from the AV1's sequence header, which should be very close to the front
+        // of the first sample. Read in successively larger chunks until we successfully parse the sequence.
+        static const size_t searchSampleChunkIncrement = 64;
+        static const size_t searchSampleSizeMax = 4096;
+        size_t searchSampleSize = 0;
+        do {
+            searchSampleSize += searchSampleChunkIncrement;
+            if (searchSampleSize > sample->size) {
+                searchSampleSize = sample->size;
+            }
+
+            avifResult prepareResult = avifDecoderPrepareSample(decoder, sample, searchSampleSize);
+            if (prepareResult != AVIF_RESULT_OK) {
+                return prepareResult;
+            }
+
+            if (avifSequenceHeaderParse(outSequenceHeader, &sample->data)) {
+                return AVIF_RESULT_OK;
+            }
+        } while (searchSampleSize != sample->size && searchSampleSize < searchSampleSizeMax);
+    }
+    return alpha ? AVIF_RESULT_DECODE_ALPHA_FAILED : AVIF_RESULT_DECODE_COLOR_FAILED;
+}
+
 avifResult avifDecoderParse(avifDecoder * decoder)
 {
     if (!decoder->io || !decoder->io->read) {
@@ -2823,12 +2875,12 @@ avifResult avifDecoderReset(avifDecoder * decoder)
         decoder->alphaPresent = (alphaItem != NULL);
         decoder->image->alphaPremultiplied = decoder->alphaPresent && (colorItem->premByID == alphaItem->id);
 
-        avifResult colorItemValidationResult = avifDecoderItemValidateAV1(colorItem);
+        avifResult colorItemValidationResult = avifDecoderValidateAV1Item(decoder, colorItem, AVIF_FALSE);
         if (colorItemValidationResult != AVIF_RESULT_OK) {
             return colorItemValidationResult;
         }
         if (alphaItem) {
-            avifResult alphaItemValidationResult = avifDecoderItemValidateAV1(alphaItem);
+            avifResult alphaItemValidationResult = avifDecoderValidateAV1Item(decoder, alphaItem, AVIF_TRUE);
             if (alphaItemValidationResult != AVIF_RESULT_OK) {
                 return alphaItemValidationResult;
             }
@@ -2898,38 +2950,18 @@ avifResult avifDecoderReset(avifDecoder * decoder)
         memcpy(&decoder->image->imir, &imirProp->u.imir, sizeof(avifImageMirror));
     }
 
-    if (!data->cicpSet && (data->tiles.count > 0)) {
-        avifTile * firstTile = &data->tiles.tile[0];
-        if (firstTile->input->samples.count > 0) {
-            avifDecodeSample * sample = &firstTile->input->samples.sample[0];
-
-            // Harvest CICP from the AV1's sequence header, which should be very close to the front
-            // of the first sample. Read in successively larger chunks until we successfully parse the sequence.
-            static const size_t searchSampleChunkIncrement = 64;
-            static const size_t searchSampleSizeMax = 4096;
-            size_t searchSampleSize = 0;
-            do {
-                searchSampleSize += searchSampleChunkIncrement;
-                if (searchSampleSize > sample->size) {
-                    searchSampleSize = sample->size;
-                }
-
-                avifResult prepareResult = avifDecoderPrepareSample(decoder, sample, searchSampleSize);
-                if (prepareResult != AVIF_RESULT_OK) {
-                    return prepareResult;
-                }
-
-                avifSequenceHeader sequenceHeader;
-                if (avifSequenceHeaderParse(&sequenceHeader, &sample->data)) {
-                    data->cicpSet = AVIF_TRUE;
-                    decoder->image->colorPrimaries = sequenceHeader.colorPrimaries;
-                    decoder->image->transferCharacteristics = sequenceHeader.transferCharacteristics;
-                    decoder->image->matrixCoefficients = sequenceHeader.matrixCoefficients;
-                    decoder->image->yuvRange = sequenceHeader.range;
-                    break;
-                }
-            } while (searchSampleSize != sample->size && searchSampleSize < searchSampleSizeMax);
+    if (!data->cicpSet) {
+        avifSequenceHeader sequenceHeader;
+        avifResult harvestResult = avifDecoderHarvestAV1SequenceHeader(decoder, AVIF_FALSE, &sequenceHeader);
+        if (harvestResult != AVIF_RESULT_OK) {
+            return harvestResult;
         }
+
+        data->cicpSet = AVIF_TRUE;
+        decoder->image->colorPrimaries = sequenceHeader.colorPrimaries;
+        decoder->image->transferCharacteristics = sequenceHeader.transferCharacteristics;
+        decoder->image->matrixCoefficients = sequenceHeader.matrixCoefficients;
+        decoder->image->yuvRange = sequenceHeader.range;
     }
 
     const avifProperty * av1CProp = avifPropertyArrayFind(colorProperties, "av1C");
